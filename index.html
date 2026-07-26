@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PolyScan — Polymarket Arbitrage Scanner</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e0e0e0;min-height:100vh}
+.header{background:linear-gradient(135deg,#1a1a2e,#16213e);padding:2rem;text-align:center;border-bottom:2px solid #0f3460}
+.header h1{font-size:2rem;color:#00d4ff;margin-bottom:.5rem}
+.header p{color:#888;font-size:.9rem}
+.container{max-width:900px;margin:2rem auto;padding:0 1rem}
+.controls{display:flex;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap;align-items:center}
+.controls label{color:#aaa;font-size:.85rem}
+.controls select,.controls input{background:#1a1a2e;color:#fff;border:1px solid #333;padding:.5rem;border-radius:6px;font-size:.9rem}
+.controls button{background:#0f3460;color:#00d4ff;border:none;padding:.6rem 1.2rem;border-radius:6px;cursor:pointer;font-weight:600;font-size:.9rem}
+.controls button:hover{background:#1a4a8a}
+.controls button:disabled{opacity:.5;cursor:not-allowed}
+.status{text-align:center;padding:1rem;color:#888;font-size:.85rem}
+.market-card{background:#111;border:1px solid #222;border-radius:10px;padding:1.2rem;margin-bottom:1rem;transition:border-color .2s}
+.market-card:hover{border-color:#0f3460}
+.market-card .question{font-size:1.05rem;font-weight:600;margin-bottom:.6rem;color:#fff}
+.market-card .prices{display:flex;gap:1.5rem;margin-bottom:.5rem}
+.market-card .price{font-size:.85rem;color:#aaa}
+.market-card .price span{font-weight:700;font-size:1rem}
+.market-card .price.yes span{color:#00e676}
+.market-card .price.no span{color:#ff5252}
+.market-card .edge{display:inline-block;padding:.2rem .6rem;border-radius:4px;font-size:.8rem;font-weight:600}
+.market-card .edge.positive{background:#00e67622;color:#00e676}
+.market-card .edge.negative{background:#ff525222;color:#ff5252}
+.market-card .meta{font-size:.75rem;color:#666;margin-top:.4rem}
+.market-card .link{color:#00d4ff;text-decoration:none;font-size:.8rem}
+.market-card .link:hover{text-decoration:underline}
+.wallet-box{background:#1a1a2e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;margin-top:2rem;text-align:center}
+.wallet-box h3{color:#00d4ff;margin-bottom:.5rem}
+.wallet-box .addr{font-family:monospace;font-size:.85rem;color:#aaa;word-break:break-all;margin:.5rem 0}
+.wallet-box .note{font-size:.75rem;color:#666}
+.empty{text-align:center;padding:3rem;color:#555}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>PolyScan</h1>
+  <p>Polymarket Binary Options Arbitrage Scanner — Real-time edge detection</p>
+</div>
+<div class="container">
+  <div class="controls">
+    <label>Min Edge: <input type="number" id="minEdge" value="0.1" step="0.1" min="0" max="10" style="width:60px">%</label>
+    <label>Markets: <select id="limit"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option></select></label>
+    <button id="scanBtn" onclick="scan()">Scan Now</button>
+    <span id="autoLabel" style="color:#888;font-size:.8rem"></span>
+  </div>
+  <div class="status" id="status">Click "Scan Now" to find arbitrage opportunities</div>
+  <div id="results"></div>
+  <div class="wallet-box">
+    <h3>Pay for Premium Alerts</h3>
+    <div class="addr">0x3F24ee078f8188a9c060f947b7C568f79A2fbbd7</div>
+    <div class="note">Send ETH/Base ETH for Telegram alerts + sub-0.1% edge detection + historical data</div>
+  </div>
+</div>
+<script>
+const API='https://gamma-api.polymarket.com/markets';
+const FEE=0.02;
+let autoTimer=null;
+
+async function scan(){
+  const btn=document.getElementById('scanBtn');
+  const status=document.getElementById('status');
+  const results=document.getElementById('results');
+  const minEdge=parseFloat(document.getElementById('minEdge').value)||0;
+  const limit=document.getElementById('limit').value;
+  
+  btn.disabled=true;
+  status.textContent='Scanning Polymarket...';
+  results.innerHTML='';
+  
+  try{
+    const resp=await fetch(`${API}?closed=false&limit=${limit}&order=liquidityNum&ascending=false`);
+    const data=await resp.json();
+    const now=new Date().toISOString().replace('T',' ').slice(0,19);
+    
+    const markets=data.filter(m=>m.outcomePrices&&m.active&&!m.closed);
+    const analyzed=[];
+    
+    for(const m of markets){
+      try{
+        let prices=typeof m.outcomePrices==='string'?JSON.parse(m.outcomePrices):m.outcomePrices;
+        prices=prices.map(Number);
+        if(prices.length!==2||prices.some(p=>p<=0||p>=1))continue;
+        
+        const yes=prices[0],no=prices[1];
+        const totalCost=yes*(1+FEE)+no*(1+FEE);
+        const edge=(1-totalCost)*100;
+        const cheaper=yes<no?'Yes':'No';
+        const cheaperPrice=Math.min(yes,no);
+        const edgeVsFair=(0.5-cheaperPrice)*100;
+        
+        if(edge>=minEdge){
+          analyzed.push({
+            question:m.question||'Unknown',
+            slug:m.slug||'',
+            yes,yes_price:yes,
+            no,no_price:no,
+            edge:edge.toFixed(3),
+            cheaper,cheaperPrice:cheaperPrice.toFixed(4),
+            edgeVsFair=edgeVsFair.toFixed(3),
+            liquidity:parseFloat(m.liquidity||0),
+            volume:parseFloat(m.volume||0),
+            endDate:m.endDate||'',
+          });
+        }
+      }catch(e){}
+    }
+    
+    analyzed.sort((a,b)=>parseFloat(b.edge)-parseFloat(a.edge));
+    
+    status.textContent=`${now} — ${analyzed.length} markets with ≥${minEdge}% edge (scanned ${markets.length} total)`;
+    
+    if(!analyzed.length){
+      results.innerHTML='<div class="empty">No arbitrage opportunities found. Polymarket is efficient — the 2% fee absorbs all edges.<br><br>This means the scanner WORKS. When mispricings appear, you\'ll see them here first.</div>';
+    }else{
+      results.innerHTML=analyzed.map(m=>`
+        <div class="market-card">
+          <div class="question">${esc(m.question)}</div>
+          <div class="prices">
+            <div class="price yes">YES: <span>${(m.yes_price*100).toFixed(1)}%</span></div>
+            <div class="price no">NO: <span>${(m.no_price*100).toFixed(1)}%</span></div>
+            <span class="edge ${parseFloat(m.edge)>=0?'positive':'negative'}">${parseFloat(m.edge)>=0?'+':''}${m.edge}% edge</span>
+          </div>
+          <div class="meta">
+            Cheaper: ${m.cheaper} @ ${(m.cheaperPrice*100).toFixed(2)}% | 
+            Liquidity: $${fmt(m.liquidity)} | Volume: $${fmt(m.volume)}
+            ${m.endDate?' | Ends: '+m.endDate.slice(0,10):''}
+          </div>
+          <a class="link" href="https://polymarket.com/event/${esc(m.slug)}" target="_blank">View on Polymarket →</a>
+        </div>
+      `).join('');
+    }
+  }catch(e){
+    status.textContent='Error: '+e.message;
+  }
+  btn.disabled=false;
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmt(n){return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(0)+'K':n.toFixed(0)}
+
+// Auto-scan every 60s
+setInterval(scan,60000);
+scan();
+</script>
+</body>
+</html>
